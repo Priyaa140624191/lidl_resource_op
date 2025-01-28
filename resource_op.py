@@ -2,6 +2,9 @@ import folium
 from streamlit_folium import folium_static
 from sklearn.cluster import DBSCAN
 import numpy as np
+from geopy.geocoders import Nominatim
+import streamlit as st
+import requests
 
 def plot_store_locations(df):
     """
@@ -138,3 +141,126 @@ def plot_clusters_by_region(df):
 
     # Display the map in Streamlit
     folium_static(store_map)
+
+def get_coordinates_from_postcode(postcode):
+    """
+    Converts a postcode to latitude and longitude.
+
+    Parameters:
+    - postcode (str): The postcode to convert.
+
+    Returns:
+    - (float, float): Latitude and longitude if found, otherwise (None, None).
+    """
+    geolocator = Nominatim(user_agent="store_locator")
+    location = geolocator.geocode(postcode)
+    if location:
+        return location.latitude, location.longitude
+    else:
+        st.error("Unable to find coordinates for the given postcode.")
+        return None, None
+
+import pandas as pd
+from geopy.distance import geodesic
+
+def get_nearby_stores(current_lat, current_lon, stores_df, available_minutes):
+    """
+    Recommend a list of nearby stores that can be cleaned within the available time slot.
+    The function prioritizes stores closest to the given coordinates.
+
+    :param current_lat: Latitude of the starting location
+    :param current_lon: Longitude of the starting location
+    :param stores_df: DataFrame containing stores information with 'Latitude', 'Longitude', 'Cleaning Time'
+    :param available_minutes: Total time available for cleaning stores
+    :return: DataFrame with recommended stores
+    """
+    # Calculate distances from the starting point
+    stores_df["Distance"] = stores_df.apply(
+        lambda row: geodesic((current_lat, current_lon), (row["Latitude"], row["Longitude"])).miles,
+        axis=1
+    )
+
+    # Sort stores by distance (nearest first)
+    stores_df = stores_df.sort_values(by="Distance")
+
+    # Find stores that fit within available cleaning time
+    stores_df["Cumulative Cleaning Time"] = stores_df["Cleaning Time"].cumsum()
+    filtered_stores = stores_df[stores_df["Cumulative Cleaning Time"] <= available_minutes]
+
+    return filtered_stores[["Store Name", "Latitude", "Longitude", "Distance", "Cleaning Time"]]
+
+def plot_map_with_routes(current_lat, current_lon, nearby_stores):
+    """
+    Plots a map with road routes from the current location to each nearby store.
+
+    Parameters:
+    - current_lat (float): Latitude of the current location.
+    - current_lon (float): Longitude of the current location.
+    - nearby_stores (DataFrame): DataFrame of nearby stores with 'Latitude', 'Longitude', and 'Store Id'.
+
+    Returns:
+    - folium.Map: Folium map object with markers and routes.
+    """
+    m = folium.Map(location=[current_lat, current_lon], zoom_start=12)
+    folium.Marker(
+        [current_lat, current_lon],
+        popup="Current Location",
+        icon=folium.Icon(color='darkred', icon='shopping-basket', prefix='fa')
+    ).add_to(m)
+
+    for _, row in nearby_stores.iterrows():
+        store_lat = row['Latitude']
+        store_lon = row['Longitude']
+        distance = row['Distance']
+        store_name = row['Store Name']
+
+        # Fetch the actual road route from OSRM
+        route = get_osrm_route(current_lat, current_lon, store_lat, store_lon)
+
+        # Plot the route on the map if found
+        if route:
+            folium.PolyLine(
+                locations=route,
+                color="blue",
+                weight=2.5,
+                opacity=0.8
+            ).add_to(m)
+
+        # Determine icon properties based on predicted_resource and Resource_Type
+        icon = folium.Icon(color='blue', icon='shopping-basket',
+                               prefix='fa')  # Default green shopping basket icon
+
+        # Add a marker for each nearby store
+        folium.Marker(
+            [store_lat, store_lon],
+            popup=f"Store ID: {row['Store Name']}, Distance: {distance:.2f} miles",
+            icon=icon
+        ).add_to(m)
+
+    return m
+
+def get_osrm_route(start_lat, start_lon, end_lat, end_lon):
+    """
+    Get road route between two points using OSRM.
+
+    Parameters:
+    - start_lat (float): Latitude of the start location.
+    - start_lon (float): Longitude of the start location.
+    - end_lat (float): Latitude of the end location.
+    - end_lon (float): Longitude of the end location.
+
+    Returns:
+    - list of (lat, lon) tuples representing the route.
+    """
+    osrm_url = f"http://router.project-osrm.org/route/v1/driving/{start_lon},{start_lat};{end_lon},{end_lat}?overview=full&geometries=geojson"
+    response = requests.get(osrm_url)
+
+    if response.status_code == 200:
+        data = response.json()
+        route = data['routes'][0]['geometry']['coordinates']
+        # OSRM returns coordinates as (lon, lat), so we need to reverse them
+        route = [(lat, lon) for lon, lat in route]
+        return route
+    else:
+        st.error("Error fetching route from OSRM.")
+        return []
