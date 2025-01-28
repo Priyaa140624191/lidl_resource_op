@@ -163,31 +163,72 @@ def get_coordinates_from_postcode(postcode):
 import pandas as pd
 from geopy.distance import geodesic
 
+from geopy.distance import geodesic
+import pandas as pd
+
+
 def get_nearby_stores(current_lat, current_lon, stores_df, available_minutes):
     """
     Recommend a list of nearby stores that can be cleaned within the available time slot.
-    The function prioritizes stores closest to the given coordinates.
+    The function prioritizes stores closest to the given coordinates and calculates distances sequentially
+    like a traveling salesman route.
 
-    :param current_lat: Latitude of the starting location
+    :param current_lat: Latitude of the starting location (distribution center)
     :param current_lon: Longitude of the starting location
     :param stores_df: DataFrame containing stores information with 'Latitude', 'Longitude', 'Cleaning Time'
     :param available_minutes: Total time available for cleaning stores
-    :return: DataFrame with recommended stores
+    :return: DataFrame with recommended stores and sequential travel distances
     """
-    # Calculate distances from the starting point
-    stores_df["Distance"] = stores_df.apply(
-        lambda row: geodesic((current_lat, current_lon), (row["Latitude"], row["Longitude"])).miles,
-        axis=1
-    )
+    # List to store the visited stores
+    route = []
 
-    # Sort stores by distance (nearest first)
-    stores_df = stores_df.sort_values(by="Distance")
+    # Create a copy of the stores DataFrame to avoid modifying the original
+    remaining_stores = stores_df.copy()
 
-    # Find stores that fit within available cleaning time
-    stores_df["Cumulative Cleaning Time"] = stores_df["Cleaning Time"].cumsum()
-    filtered_stores = stores_df[stores_df["Cumulative Cleaning Time"] <= available_minutes]
+    # Initialize starting point
+    current_location = (current_lat, current_lon)
 
-    return filtered_stores[["Store Name", "Latitude", "Longitude", "Distance", "Cleaning Time"]]
+    while not remaining_stores.empty:
+        # Calculate distance from the current location to each remaining store
+        remaining_stores["Distance"] = remaining_stores.apply(
+            lambda row: geodesic(current_location, (row["Latitude"], row["Longitude"])).miles,
+            axis=1
+        )
+
+        # Sort by nearest store
+        nearest_store = remaining_stores.loc[remaining_stores["Distance"].idxmin()]
+
+        # Check if adding this store exceeds the available cleaning time
+        total_cleaning_time = sum([store["Cleaning Time"] for store in route]) + nearest_store["Cleaning Time"]
+        if total_cleaning_time > available_minutes:
+            break  # Stop adding stores if time exceeds the available slot
+
+        # Add the store to the route
+        route.append({
+            "Store No": nearest_store["Store"],
+            "Store Name": nearest_store["Store Name"],
+            "Latitude": nearest_store["Latitude"],
+            "Longitude": nearest_store["Longitude"],
+            "Distance": nearest_store["Distance"],  # Distance from previous location
+            "Cleaning Time": nearest_store["Cleaning Time"],
+            "Travel Time": nearest_store["Distance"]*3,
+            "Preparation Time": 0.1*nearest_store["Cleaning Time"]
+        })
+
+        # Update current location
+        current_location = (nearest_store["Latitude"], nearest_store["Longitude"])
+
+        # Remove the selected store from remaining stores
+        remaining_stores = remaining_stores.drop(nearest_store.name)
+
+    return pd.DataFrame(route)
+
+
+# Example usage:
+# df_stores = pd.read_csv("your_stores_data.csv")  # Load the dataset
+# schedule_df = get_nearby_stores(current_lat, current_lon, df_stores, available_minutes)
+# print(schedule_df)
+
 
 def plot_map_with_routes(current_lat, current_lon, nearby_stores):
     """
@@ -238,6 +279,60 @@ def plot_map_with_routes(current_lat, current_lon, nearby_stores):
         ).add_to(m)
 
     return m
+
+
+import folium
+from folium.plugins import AntPath
+import pandas as pd
+
+import folium
+from folium.plugins import AntPath
+import pandas as pd
+
+
+def plot_store_route(schedule_df, start_lat, start_lon):
+    # Extract the first row as the starting (distribution center)
+    start_lat, start_lon = schedule_df.iloc[0]["Latitude"], schedule_df.iloc[0]["Longitude"]
+
+    # Create a map centered at the distribution center
+    route_map = folium.Map(location=[start_lat, start_lon], zoom_start=10)
+
+    # Add starting location marker with a DISTINCT COLOR (GREEN) and ICON (home)
+    folium.Marker(
+        location=[start_lat, start_lon],
+        popup="🚛 Distribution Center (Start)",
+        icon=folium.Icon(color="red", icon="home"),
+    ).add_to(route_map)
+
+    # Convert DataFrame to list of coordinates [(lat, lon)]
+    locations = [(start_lat, start_lon)] + list(zip(schedule_df.iloc[1:]["Latitude"], schedule_df.iloc[1:]["Longitude"]))
+
+    # Plot each store as a marker with BLUE color (skip first row since it's the distribution center)
+    for idx, row in schedule_df.iloc[1:].iterrows():
+        folium.Marker(
+            location=[row["Latitude"], row["Longitude"]],
+            popup=f"🛒 Stop {idx}: {row['Store Name']} - {row['Cleaning Time']} min",
+            icon=folium.Icon(color="blue", icon="shopping-cart"),
+        ).add_to(route_map)
+
+    # Draw the optimized route using AntPath (animated route)
+    AntPath(locations, color="blue", weight=3, dash_array=[10, 20]).add_to(route_map)
+
+    return route_map
+
+
+
+# Example usage:
+# Assuming you have `schedule_df` from the `get_nearby_stores` function
+# route_map = plot_store_route(schedule_df, current_lat, current_lon)
+# route_map.save("cleaning_route_map.html")  # Save as an interactive HTML file
+
+
+# Example usage:
+# Assuming you have `schedule_df` from the `get_nearby_stores` function
+# route_map = plot_store_route(schedule_df, current_lat, current_lon)
+# route_map.save("cleaning_route_map.html")  # Save as an interactive HTML file
+
 
 def get_osrm_route(start_lat, start_lon, end_lat, end_lon):
     """
