@@ -5,6 +5,8 @@ import resource_op as ro
 import folium
 from streamlit_folium import st_folium
 import requests
+import random
+from streamlit_folium import folium_static
 
 def load_data(file_path):
     """
@@ -126,9 +128,88 @@ def plot_route_on_map(stores):
 
     return route_map
 
+def create_schedule(stores, store_names, store_postcodes, cleaning_times, slot_minutes, days=['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'], break_time=0):
+    """
+    Create a cleaning schedule for stores with varying cleaning times.
+
+    :param stores: List of store IDs/names.
+    :param cleaning_times: List of cleaning times corresponding to each store (in minutes).
+    :param slot_minutes: Total available minutes per slot.
+    :param days: Days of the week available for scheduling.
+    :param break_time: Break time (minutes) to account for during the slot.
+    :return: Pandas DataFrame with the schedule.
+    """
+    # Initialize variables
+    schedule = []
+    current_day = 0
+    remaining_minutes = slot_minutes - break_time
+
+    # Iterate through stores and their cleaning times
+    for store, store_name, store_postcode, cleaning_time in zip(stores, store_names, store_postcodes, cleaning_times):
+        # Check if the current store can fit in the remaining time for the day
+        if remaining_minutes >= cleaning_time:
+            schedule.append({'Store': store,'Store Name': store_name,'Store Postcodes': store_postcode, 'Estimated Cleaning Time': cleaning_time, 'Day': days[current_day], 'Slot': f'{slot_minutes // 60} hours'})
+            remaining_minutes -= cleaning_time
+        else:
+            # Move to the next day
+            current_day = (current_day + 1) % len(days)
+            remaining_minutes = slot_minutes - break_time - cleaning_time
+            schedule.append({'Store': store, 'Store Name': store_name,'Store Postcodes': store_postcode, 'Estimated Cleaning Time': cleaning_time, 'Day': days[current_day], 'Slot': f'{slot_minutes // 60} hours'})
+
+    return pd.DataFrame(schedule)
+
+def create_schedule_year(stores, cleaning_times, frequencies, slot_minutes, days=['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'], break_time=0):
+    """
+    Create a cleaning schedule for stores with varying cleaning times and cleaning frequencies.
+
+    :param stores: List of store IDs/names.
+    :param cleaning_times: List of cleaning times corresponding to each store (in minutes).
+    :param frequencies: List of cleaning frequencies (e.g., bi-monthly, monthly, quarterly).
+    :param slot_minutes: Total available minutes per slot.
+    :param days: Days of the week available for scheduling.
+    :param break_time: Break time (minutes) to account for during the slot.
+    :return: Pandas DataFrame with the schedule.
+    """
+    # Frequency to occurrences per year and corresponding months
+    frequency_mapping = {
+        'Monthly': range(1, 13),  # Every month
+        'Bi-monthly': range(1, 13, 2),  # Every two months
+        'Quarterly': range(1, 13, 3)  # Every three months
+    }
+
+    # Initialize schedule
+    schedule = []
+    current_day_idx = 0
+    remaining_minutes = slot_minutes - break_time
+
+    # Iterate through each month
+    for month in range(1, 13):
+        for store, cleaning_time, frequency in zip(stores, cleaning_times, frequencies):
+            # Check if the store needs cleaning in this month
+            if month in frequency_mapping[frequency]:
+                # Find the next available day for this store
+                while remaining_minutes < cleaning_time:
+                    # Move to the next day and reset time
+                    current_day_idx = (current_day_idx + 1) % len(days)
+                    remaining_minutes = slot_minutes - break_time
+
+                # Schedule the store
+                schedule.append({
+                    'Store': store,
+                    'Month': month,
+                    'Day': days[current_day_idx],
+                    'Slot': f'{slot_minutes // 60} hours',
+                    'Estimated Cleaning Time (minutes)': cleaning_time,
+                    'Frequency': frequency
+                })
+                # Deduct time from the current day's slot
+                remaining_minutes -= cleaning_time
+
+    return pd.DataFrame(schedule)
+
 if __name__ == "__main__":
 
-    df = load_data("lidl_data.csv")
+    df = load_data("updated_lidl.csv")
 
     # Convert Store column to string
     df["Store"] = df["Store"].astype(str)
@@ -264,3 +345,55 @@ if __name__ == "__main__":
     if st.session_state.map:
         st.subheader("Shortest Route to visit all stores in the region")
         st_folium(st.session_state.map, width=700, height=500)
+
+    if not filtered_stores.empty:
+        # Convert the filtered data into the required format for scheduling
+        stores = filtered_stores["Store"]
+        store_names = filtered_stores["Store Name"]
+        store_postcodes = filtered_stores["Store Postcode"]
+        cleaning_times = filtered_stores["Cleaning Time"]
+        frequencies = filtered_stores["Frequency of Basket Clean"]
+
+        # Generate schedule for 5 am to 9 am slot (240 minutes)
+        schedule_5am_9am = create_schedule(stores, store_names, store_postcodes, cleaning_times, slot_minutes=240)
+
+        # Generate schedule for 5 am to 9 pm slot (960 minutes with a 30-minute break)
+        schedule_5am_9pm = create_schedule(stores, store_names, store_postcodes, cleaning_times, slot_minutes=960, break_time=30)
+
+        # Display the schedules
+        st.subheader(f"Schedule for 5 am to 9 am slot for {selected_region}:")
+        st.dataframe(schedule_5am_9am)
+
+        st.subheader(f"Schedule for 5 am to 9 pm slot for {selected_region}:")
+        st.dataframe(schedule_5am_9pm)
+    else:
+        st.warning("No stores are available in the selected region.")
+
+    if not filtered_stores.empty:
+        stores = filtered_stores['Store']
+        cleaning_times = [random.randint(10, 50) for _ in range(len(stores))]
+        frequencies = [random.choice(['Monthly', 'Bi-monthly', 'Quarterly']) for _ in range(len(stores))]
+        schedule = create_schedule_year(stores, cleaning_times, frequencies, slot_minutes=240)
+        schedule1 = create_schedule_year(stores, cleaning_times, frequencies, slot_minutes=960)
+        st.subheader("Yearly Schedule 5 am to 9 am slot")
+        st.dataframe(schedule)
+        st.subheader("Yearly Schedule 5 am to 9 pm slot")
+        st.dataframe(schedule1)
+
+        postcode = st.text_input("Enter Start Postcode:", "BR1 1EZ")
+        time_slot = st.radio("Select Cleaning Slot:", ["5 AM - 9 AM", "5 AM - 9 PM"])
+
+        # Define available time based on user selection
+        available_minutes = 240 if time_slot == "5 AM - 9 AM" else 960
+        current_lat, current_lon = ro.get_coordinates_from_postcode(postcode)
+
+        # Get stores that can be cleaned within available time
+        nearby_stores = ro.get_nearby_stores(current_lat, current_lon, filtered_stores, available_minutes)
+
+        # Print or return the stores
+        st.write(nearby_stores)
+
+        if not nearby_stores.empty:
+            st.write("Map with Routes to Nearby Stores:")
+            m = ro.plot_map_with_routes(current_lat, current_lon, nearby_stores)
+            folium_static(m)
