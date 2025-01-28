@@ -291,6 +291,11 @@ if __name__ == "__main__":
         # st.write(f"Clusters based on a {eps_miles} mile threshold:")
         ro.plot_clusters_by_region(df)
 
+    people_per_region = pd.read_csv("People per Region.csv")
+
+    st.subheader("People needed to clean per Region")
+    st.dataframe(people_per_region)
+
     # Streamlit UI
     st.subheader("Region Selector with Route Mapping")
 
@@ -408,5 +413,3 @@ if __name__ == "__main__":
     st.dataframe(df1)
     st.subheader("Optimised Yearly schedule for 5 AM to 9 PM")
     st.dataframe(df2)
-
-
